@@ -40,11 +40,12 @@ int landlock_supervisor_init(struct landlock_supervisor *supervisor)
 void landlock_supervisor_destroy(struct landlock_supervisor *supervisor)
 {
 	struct landlock_supervisor_request *req, *tmp;
+	unsigned long flags;
 
 	if (!supervisor || !supervisor->enabled)
 		return;
 
-	spin_lock(&supervisor->lock);
+	spin_lock_irqsave(&supervisor->lock, flags);
 
 	/* Wake up and clean pending requests */
 	list_for_each_entry_safe(req, tmp, &supervisor->pending_requests, list) {
@@ -62,7 +63,7 @@ void landlock_supervisor_destroy(struct landlock_supervisor *supervisor)
 	}
 
 	supervisor->enabled = false;
-	spin_unlock(&supervisor->lock);
+	spin_unlock_irqrestore(&supervisor->lock, flags);
 }
 
 /**
@@ -80,6 +81,7 @@ int landlock_supervisor_check(struct landlock_ruleset *ruleset,
 	struct landlock_supervisor_request *req;
 	unsigned long flags;
 	int ret;
+	bool allow;
 
 	if (!ruleset)
 		return -EINVAL;
@@ -120,15 +122,18 @@ int landlock_supervisor_check(struct landlock_ruleset *ruleset,
 	/* Wait for response */
 	ret = wait_event_interruptible(req->wait, req->response_received);
 
+	/* Remove from list and get decision before freeing */
 	spin_lock_irqsave(&supervisor->lock, flags);
-	list_del(&req->list);
+	if (!list_empty(&req->list))
+		list_del(&req->list);
+	allow = req->allow;
 	spin_unlock_irqrestore(&supervisor->lock, flags);
-
-	if (ret == 0)
-		ret = req->allow ? 0 : -EACCES;
 
 	kfree(req->path);
 	kfree(req);
 
-	return ret;
+	if (ret < 0)
+		return ret; /* Interrupted by signal */
+
+	return allow ? 0 : -EACCES;
 }

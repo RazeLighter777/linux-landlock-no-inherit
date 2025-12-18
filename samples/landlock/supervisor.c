@@ -120,18 +120,19 @@ int main(int argc, char **argv)
 
 	if (child_pid == 0) {
 		/* Child: apply ruleset and exec command */
-		close(STDIN_FILENO);
-		close(STDOUT_FILENO);
-		close(STDERR_FILENO);
-
 		if (landlock_restrict_self(ruleset_fd, 0) != 0) {
 			perror("landlock_restrict_self");
 			return 1;
 		}
 		close(ruleset_fd);
 
+		/* Close standard fds after all error handling */
+		close(STDIN_FILENO);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+
 		execvp(argv[1], &argv[1]);
-		perror("execvp");
+		/* Cannot use perror here as stderr is closed */
 		return 1;
 	}
 
