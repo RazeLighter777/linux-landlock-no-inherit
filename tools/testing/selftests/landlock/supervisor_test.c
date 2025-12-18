@@ -19,6 +19,33 @@
 
 #include "common.h"
 
+/* Temporary definitions until headers are properly installed */
+#ifndef LANDLOCK_CREATE_RULESET_SUPERVISOR
+#define LANDLOCK_CREATE_RULESET_SUPERVISOR (1U << 2)
+#endif
+
+#ifndef LANDLOCK_SUPERVISOR_ALLOW
+struct landlock_supervisor_event {
+	__u64 id;
+	__u32 pid;
+	__u64 access;
+	__u32 path_size;
+	char path[0];
+};
+
+struct landlock_supervisor_response {
+	__u64 id;
+	__u32 flags;
+	__u32 reserved;
+};
+
+#define LANDLOCK_SUPERVISOR_ALLOW (1U << 0)
+#define LANDLOCK_SUPERVISOR_DENY (1U << 1)
+#define LANDLOCK_SUPERVISOR_CACHE_EXEC (1U << 2)
+#define LANDLOCK_SUPERVISOR_CACHE_PROCESS (1U << 3)
+#define LANDLOCK_SUPERVISOR_CACHE_SUBTREE (1U << 4)
+#endif
+
 /* Test that supervisor flag is recognized */
 TEST(supervisor_flag)
 {
