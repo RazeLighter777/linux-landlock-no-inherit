@@ -49,6 +49,7 @@
 #include "object.h"
 #include "ruleset.h"
 #include "setup.h"
+#include "supervisor.h"
 
 /* Underlying object management */
 
@@ -1090,6 +1091,9 @@ static int current_check_access_path(const struct path *const path,
 		landlock_get_applicable_subject(current_cred(), masks, NULL);
 	layer_mask_t layer_masks[LANDLOCK_NUM_ACCESS_FS] = {};
 	struct landlock_request request = {};
+	char *pathname;
+	char *buf;
+	int ret;
 
 	if (!subject)
 		return 0;
@@ -1102,6 +1106,29 @@ static int current_check_access_path(const struct path *const path,
 		       NULL, NULL))
 		return 0;
 
+	/* Normal access check denied, try supervisor if enabled */
+	if (subject->domain->supervisor &&
+	    subject->domain->supervisor->enabled) {
+		buf = (char *)__get_free_page(GFP_KERNEL);
+		if (!buf)
+			goto deny;
+
+		pathname = d_path(path, buf, PAGE_SIZE);
+		if (IS_ERR(pathname)) {
+			free_page((unsigned long)buf);
+			goto deny;
+		}
+
+		ret = landlock_supervisor_check(subject->domain, pathname,
+						access_request);
+		free_page((unsigned long)buf);
+
+		if (ret == 0)
+			return 0; /* Supervisor allowed */
+		/* Supervisor denied or error, fall through to deny */
+	}
+
+deny:
 	landlock_log_denial(subject, &request);
 	return -EACCES;
 }

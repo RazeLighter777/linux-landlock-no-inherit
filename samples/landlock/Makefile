@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-userprogs-always-y := sandboxer
+userprogs-always-y := sandboxer supervisor
 
 userccflags += -I usr/include
 
