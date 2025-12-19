@@ -21,6 +21,7 @@
 #include "object.h"
 
 struct landlock_hierarchy;
+struct landlock_supervisor;
 
 /**
  * struct landlock_layer - Access rights for a given layer
@@ -188,6 +189,11 @@ struct landlock_ruleset {
 	 * domain vanishes.  This is needed for the ptrace protection.
 	 */
 	struct landlock_hierarchy *hierarchy;
+	/**
+	 * @supervisor: Supervisor state for interactive access control.
+	 * NULL if supervisor mode is not enabled.
+	 */
+	struct landlock_supervisor *supervisor;
 	union {
 		/**
 		 * @work_free: Enables to free a ruleset within a lockless

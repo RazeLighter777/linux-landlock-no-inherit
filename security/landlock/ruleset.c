@@ -30,6 +30,7 @@
 #include "limits.h"
 #include "object.h"
 #include "ruleset.h"
+#include "supervisor.h"
 
 static struct landlock_ruleset *create_ruleset(const u32 num_layers)
 {
@@ -511,6 +512,14 @@ static void free_ruleset(struct landlock_ruleset *const ruleset)
 #endif /* IS_ENABLED(CONFIG_INET) */
 
 	landlock_put_hierarchy(ruleset->hierarchy);
+
+	/* Clean up supervisor if enabled */
+	if (ruleset->supervisor) {
+		landlock_supervisor_destroy(ruleset->supervisor);
+		kfree(ruleset->supervisor);
+		ruleset->supervisor = NULL;
+	}
+
 	kfree(ruleset);
 }
 

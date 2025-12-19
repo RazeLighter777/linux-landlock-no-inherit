@@ -463,4 +463,196 @@ struct landlock_net_port_attr {
 #define LANDLOCK_SCOPE_SIGNAL		                (1ULL << 1)
 /* clang-format on*/
 
+/**
+ * DOC: supervisor
+ *
+ * Supervisor
+ * ~~~~~~~~~~
+ *
+ * A supervisor allows a userspace program to interactively allow or deny
+ * Landlock access requests from child processes. This enables dynamic policy
+ * enforcement based on runtime decisions.
+ *
+ * To enable supervision, use the %LANDLOCK_CREATE_RULESET_SUPERVISOR flag
+ * when creating a ruleset. The ruleset file descriptor can then be used with
+ * poll() to wait for access requests and read/write operations to handle them.
+ *
+ * Supervisor flags
+ * ~~~~~~~~~~~~~~~~
+ *
+ * %LANDLOCK_CREATE_RULESET_SUPERVISOR
+ *     Enable supervisor mode for this ruleset. When set, access denials can
+ *     be intercepted and sent to userspace for approval before enforcement.
+ *     Supervisor checks occur after normal Landlock access checks.
+ */
+/* clang-format off */
+#define LANDLOCK_CREATE_RULESET_SUPERVISOR		(1U << 2)
+/* clang-format on */
+
+/**
+ * struct landlock_supervisor_event - Supervisor access request event
+ *
+ * This structure is returned when reading from a supervisor-enabled ruleset
+ * file descriptor. It describes an access request that requires supervisor
+ * approval.
+ */
+struct landlock_supervisor_event {
+	/**
+	 * @id: Unique identifier for this access request event.
+	 * Used to respond to the request.
+	 */
+	__u64 id;
+	/**
+	 * @pid: Process ID of the task making the access request.
+	 */
+	__u32 pid;
+	/**
+	 * @access: Requested filesystem access rights (cf. `Filesystem flags`_).
+	 */
+	__u64 access;
+	/**
+	 * @path_size: Length of the path string including null terminator.
+	 */
+	__u32 path_size;
+	/**
+	 * @path: Null-terminated path being accessed (variable length).
+	 * Maximum length is PATH_MAX (4096 bytes).
+	 */
+	char path[0];
+};
+
+/**
+ * DOC: supervisor_response_flags
+ *
+ * Supervisor response flags
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * %LANDLOCK_SUPERVISOR_ALLOW
+ *     Allow this specific access request.
+ *
+ * %LANDLOCK_SUPERVISOR_DENY
+ *     Deny this specific access request.
+ *
+ * Caching policy flags (can be combined with allow/deny):
+ *
+ * %LANDLOCK_SUPERVISOR_CACHE_EXEC
+ *     Cache decision for all processes with the same executable dentry.
+ *
+ * %LANDLOCK_SUPERVISOR_CACHE_PROCESS
+ *     Cache decision for this specific process instance only.
+ *
+ * %LANDLOCK_SUPERVISOR_CACHE_SUBTREE
+ *     Cache decision for all child processes under the requesting PID.
+ */
+/* clang-format off */
+#define LANDLOCK_SUPERVISOR_ALLOW			(1U << 0)
+#define LANDLOCK_SUPERVISOR_DENY			(1U << 1)
+#define LANDLOCK_SUPERVISOR_CACHE_EXEC			(1U << 2)
+#define LANDLOCK_SUPERVISOR_CACHE_PROCESS		(1U << 3)
+#define LANDLOCK_SUPERVISOR_CACHE_SUBTREE		(1U << 4)
+/* clang-format on */
+
+/**
+ * struct landlock_supervisor_response - Supervisor decision response
+ *
+ * This structure is written to a supervisor-enabled ruleset file descriptor
+ * to respond to an access request event.
+ */
+struct landlock_supervisor_response {
+	/**
+	 * @id: Event ID from the corresponding landlock_supervisor_event.
+	 */
+	__u64 id;
+	/**
+	 * @flags: Response flags (cf. `Supervisor response flags`_).
+	 */
+	__u32 flags;
+	/**
+	 * @reserved: Must be zero for future compatibility.
+	 */
+	__u32 reserved;
+};
+
+/**
+ * DOC: supervisor_cache
+ *
+ * Supervisor Cache Management
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * Cache entries allow supervisors to pre-approve access patterns without
+ * interactive prompts. Each cache entry contains a single-layer ruleset
+ * and matching criteria.
+ *
+ * Cache match types:
+ *
+ * %LANDLOCK_SUPERVISOR_MATCH_PID
+ *     Match a specific process instance (not stored as raw PID).
+ *
+ * %LANDLOCK_SUPERVISOR_MATCH_PID_SUBTREE
+ *     Match a process and all its descendants.
+ *
+ * %LANDLOCK_SUPERVISOR_MATCH_EXEC
+ *     Match processes with a specific executable path.
+ *
+ * %LANDLOCK_SUPERVISOR_MATCH_EXEC_SUBTREE
+ *     Match executable and allow descendants to match.
+ *
+ * %LANDLOCK_SUPERVISOR_MATCH_ALL
+ *     Match all processes in the domain.
+ */
+/* clang-format off */
+#define LANDLOCK_SUPERVISOR_MATCH_PID			1
+#define LANDLOCK_SUPERVISOR_MATCH_PID_SUBTREE		2
+#define LANDLOCK_SUPERVISOR_MATCH_EXEC			3
+#define LANDLOCK_SUPERVISOR_MATCH_EXEC_SUBTREE		4
+#define LANDLOCK_SUPERVISOR_MATCH_ALL			5
+/* clang-format on */
+
+/**
+ * struct landlock_supervisor_cache_entry - Add a cache entry
+ *
+ * Used with LANDLOCK_SUPERVISOR_IOCTL_ADD_CACHE to add a new cache entry.
+ */
+struct landlock_supervisor_cache_entry {
+	/**
+	 * @ruleset_fd: File descriptor of a single-layer landlock ruleset.
+	 */
+	__s32 ruleset_fd;
+	/**
+	 * @match_type: Type of matching (cf. `Supervisor Cache Management`_).
+	 */
+	__u32 match_type;
+	/**
+	 * @pid: Process ID for PID-based matching (0 for non-PID matches).
+	 */
+	__u32 pid;
+	/**
+	 * @path_fd: File descriptor to executable for EXEC-based matching
+	 * (opened with O_PATH, -1 for non-EXEC matches).
+	 */
+	__s32 path_fd;
+	/**
+	 * @reserved: Must be zero for future compatibility.
+	 */
+	__u32 reserved;
+};
+
+/**
+ * struct landlock_supervisor_cache_remove - Remove a cache entry
+ *
+ * Used with LANDLOCK_SUPERVISOR_IOCTL_REMOVE_CACHE to remove a cache entry.
+ */
+struct landlock_supervisor_cache_remove {
+	/**
+	 * @entry_id: ID returned from LANDLOCK_SUPERVISOR_IOCTL_ADD_CACHE.
+	 */
+	__u64 entry_id;
+};
+
+/* Supervisor ioctl commands */
+#define LANDLOCK_SUPERVISOR_IOCTL_ADD_CACHE \
+	_IOWR('L', 0x01, struct landlock_supervisor_cache_entry)
+#define LANDLOCK_SUPERVISOR_IOCTL_REMOVE_CACHE \
+	_IOW('L', 0x02, struct landlock_supervisor_cache_remove)
+
 #endif /* _UAPI_LINUX_LANDLOCK_H */

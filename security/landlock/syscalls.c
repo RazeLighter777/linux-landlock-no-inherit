@@ -21,8 +21,10 @@
 #include <linux/limits.h>
 #include <linux/mount.h>
 #include <linux/path.h>
+#include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/security.h>
+#include <linux/slab.h>
 #include <linux/stddef.h>
 #include <linux/syscalls.h>
 #include <linux/types.h>
@@ -36,6 +38,7 @@
 #include "net.h"
 #include "ruleset.h"
 #include "setup.h"
+#include "supervisor.h"
 
 static bool is_initialized(void)
 {
@@ -133,28 +136,161 @@ static int fop_ruleset_release(struct inode *const inode,
 static ssize_t fop_dummy_read(struct file *const filp, char __user *const buf,
 			      const size_t size, loff_t *const ppos)
 {
-	/* Dummy handler to enable FMODE_CAN_READ. */
-	return -EINVAL;
+	struct landlock_ruleset *ruleset = filp->private_data;
+	struct landlock_supervisor *supervisor;
+	struct landlock_supervisor_request *req;
+	struct landlock_supervisor_event *event;
+	size_t event_size, total_size;
+	unsigned long flags;
+	ssize_t ret;
+
+	if (!ruleset)
+		return -EINVAL;
+
+	supervisor = ruleset->supervisor;
+	if (!supervisor || !supervisor->enabled)
+		return -EINVAL; /* Not a supervisor-enabled ruleset */
+
+	/* Get first pending request */
+	spin_lock_irqsave(&supervisor->lock, flags);
+	if (list_empty(&supervisor->pending_requests)) {
+		spin_unlock_irqrestore(&supervisor->lock, flags);
+		return -EAGAIN;
+	}
+
+	req = list_first_entry(&supervisor->pending_requests,
+			       struct landlock_supervisor_request, list);
+	spin_unlock_irqrestore(&supervisor->lock, flags);
+
+	/* Calculate event size */
+	event_size = sizeof(struct landlock_supervisor_event);
+	total_size = event_size + req->path_len;
+
+	if (size < total_size)
+		return -EINVAL;
+
+	/* Allocate and fill event */
+	event = kzalloc(total_size, GFP_KERNEL);
+	if (!event)
+		return -ENOMEM;
+
+	event->id = req->id;
+	event->pid = req->pid;
+	event->access = req->access;
+	event->path_size = req->path_len;
+	memcpy(event->path, req->path, req->path_len);
+
+	/* Copy to userspace */
+	ret = copy_to_user(buf, event, total_size);
+	kfree(event);
+
+	if (ret)
+		return -EFAULT;
+
+	return total_size;
 }
 
 static ssize_t fop_dummy_write(struct file *const filp,
 			       const char __user *const buf, const size_t size,
 			       loff_t *const ppos)
 {
-	/* Dummy handler to enable FMODE_CAN_WRITE. */
-	return -EINVAL;
+	struct landlock_ruleset *ruleset = filp->private_data;
+	struct landlock_supervisor *supervisor;
+	struct landlock_supervisor_response response;
+	struct landlock_supervisor_request *req;
+	unsigned long flags;
+	bool found = false;
+
+	if (!ruleset)
+		return -EINVAL;
+
+	supervisor = ruleset->supervisor;
+	if (!supervisor || !supervisor->enabled)
+		return -EINVAL; /* Not a supervisor-enabled ruleset */
+
+	if (size < sizeof(response))
+		return -EINVAL;
+
+	/* Copy response from userspace */
+	if (copy_from_user(&response, buf, sizeof(response)))
+		return -EFAULT;
+
+	/* Validate response */
+	if (response.reserved != 0)
+		return -EINVAL;
+
+	if (!(response.flags & (LANDLOCK_SUPERVISOR_ALLOW | LANDLOCK_SUPERVISOR_DENY)))
+		return -EINVAL;
+
+	/* Find and respond to request */
+	spin_lock_irqsave(&supervisor->lock, flags);
+	list_for_each_entry(req, &supervisor->pending_requests, list) {
+		if (req->id == response.id) {
+			req->response_received = true;
+			req->allow = !!(response.flags & LANDLOCK_SUPERVISOR_ALLOW);
+			found = true;
+			wake_up(&req->wait);
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&supervisor->lock, flags);
+
+	if (!found)
+		return -ENOENT;
+
+	return sizeof(response);
+}
+
+static __poll_t fop_ruleset_poll(struct file *filp, poll_table *wait)
+{
+	struct landlock_ruleset *ruleset = filp->private_data;
+	struct landlock_supervisor *supervisor;
+	__poll_t mask = 0;
+
+	if (!ruleset)
+		return EPOLLERR;
+
+	supervisor = ruleset->supervisor;
+	if (!supervisor || !supervisor->enabled)
+		return EPOLLERR; /* Not a supervisor-enabled ruleset */
+
+	poll_wait(filp, &supervisor->wait_queue, wait);
+
+	if (!list_empty(&supervisor->pending_requests))
+		mask |= EPOLLIN | EPOLLRDNORM;
+
+	/* Always writable for responses */
+	mask |= EPOLLOUT | EPOLLWRNORM;
+
+	return mask;
+}
+
+static long fop_ruleset_ioctl(struct file *filp, unsigned int cmd,
+			      unsigned long arg)
+{
+	struct landlock_ruleset *ruleset = filp->private_data;
+
+	if (!ruleset)
+		return -EINVAL;
+
+	/* Only handle supervisor ioctls */
+	return landlock_supervisor_ioctl(ruleset, cmd, arg);
 }
 
 /*
  * A ruleset file descriptor enables to build a ruleset by adding (i.e.
  * writing) rule after rule, without relying on the task's context.  This
  * reentrant design is also used in a read way to enforce the ruleset on the
- * current task.
+ * current task. When supervisor mode is enabled, read/write/poll are used
+ * for interactive access control.
  */
 static const struct file_operations ruleset_fops = {
 	.release = fop_ruleset_release,
 	.read = fop_dummy_read,
 	.write = fop_dummy_write,
+	.poll = fop_ruleset_poll,
+	.unlocked_ioctl = fop_ruleset_ioctl,
+	.compat_ioctl = fop_ruleset_ioctl,
 };
 
 /*
@@ -203,6 +339,7 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
 {
 	struct landlock_ruleset_attr ruleset_attr;
 	struct landlock_ruleset *ruleset;
+	bool enable_supervisor = false;
 	int err, ruleset_fd;
 
 	/* Build-time checks. */
@@ -211,7 +348,8 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
 	if (!is_initialized())
 		return -EOPNOTSUPP;
 
-	if (flags) {
+	/* Check for special flags that don't require attr */
+	if (flags & (LANDLOCK_CREATE_RULESET_VERSION | LANDLOCK_CREATE_RULESET_ERRATA)) {
 		if (attr || size)
 			return -EINVAL;
 
@@ -221,6 +359,17 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
 		if (flags == LANDLOCK_CREATE_RULESET_ERRATA)
 			return landlock_errata;
 
+		return -EINVAL;
+	}
+
+	/* Check for supervisor flag */
+	if (flags & LANDLOCK_CREATE_RULESET_SUPERVISOR) {
+		enable_supervisor = true;
+		/* Validate no other flags are set */
+		if (flags & ~LANDLOCK_CREATE_RULESET_SUPERVISOR)
+			return -EINVAL;
+	} else if (flags) {
+		/* Unknown flags */
 		return -EINVAL;
 	}
 
@@ -272,6 +421,22 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
 	ruleset->quiet_masks.net = ruleset_attr.quiet_access_net;
 	ruleset->quiet_masks.scope = ruleset_attr.quiet_scoped;
 
+	/* Enable supervisor if requested */
+	if (enable_supervisor) {
+		ruleset->supervisor = kzalloc(sizeof(*ruleset->supervisor), GFP_KERNEL);
+		if (!ruleset->supervisor) {
+			landlock_put_ruleset(ruleset);
+			return -ENOMEM;
+		}
+		err = landlock_supervisor_init(ruleset->supervisor);
+		if (err) {
+			kfree(ruleset->supervisor);
+			ruleset->supervisor = NULL;
+			landlock_put_ruleset(ruleset);
+			return err;
+		}
+	}
+
 	/* Creates anonymous FD referring to the ruleset. */
 	ruleset_fd = anon_inode_getfd("[landlock-ruleset]", &ruleset_fops,
 				      ruleset, O_RDWR | O_CLOEXEC);
@@ -284,8 +449,8 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
  * Returns an owned ruleset from a FD. It is thus needed to call
  * landlock_put_ruleset() on the return value.
  */
-static struct landlock_ruleset *get_ruleset_from_fd(const int fd,
-						    const fmode_t mode)
+struct landlock_ruleset *get_ruleset_from_fd(const int fd,
+					     const fmode_t mode)
 {
 	CLASS(fd, ruleset_f)(fd);
 	struct landlock_ruleset *ruleset;
