@@ -1119,7 +1119,7 @@ static int current_check_access_path(const struct path *const path,
 			goto deny;
 		}
 
-		ret = landlock_supervisor_check(subject->domain, pathname,
+		ret = landlock_supervisor_check(subject->domain, path, pathname,
 						access_request);
 		free_page((unsigned long)buf);
 

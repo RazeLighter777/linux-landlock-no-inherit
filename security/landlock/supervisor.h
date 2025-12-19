@@ -142,7 +142,8 @@ struct landlock_supervisor {
 int landlock_supervisor_init(struct landlock_supervisor *supervisor);
 void landlock_supervisor_destroy(struct landlock_supervisor *supervisor);
 int landlock_supervisor_check(struct landlock_ruleset *ruleset,
-			      const char *path, u64 access);
+			      const struct path *const path_struct,
+			      const char *path_str, u64 access);
 long landlock_supervisor_ioctl(struct landlock_ruleset *ruleset,
 			       unsigned int cmd, unsigned long arg);
 
