@@ -15,6 +15,49 @@
 #include <linux/workqueue.h>
 
 struct landlock_ruleset;
+struct task_struct;
+struct dentry;
+
+/**
+ * enum landlock_supervisor_match_type - Cache entry match type
+ */
+enum landlock_supervisor_match_type {
+	LANDLOCK_MATCH_PID = 1,
+	LANDLOCK_MATCH_PID_SUBTREE,
+	LANDLOCK_MATCH_EXEC,
+	LANDLOCK_MATCH_EXEC_SUBTREE,
+	LANDLOCK_MATCH_ALL,
+};
+
+/**
+ * struct landlock_supervisor_cache - Cache entry for pre-approved access
+ */
+struct landlock_supervisor_cache {
+	/**
+	 * @list: Entry in supervisor's cache list.
+	 */
+	struct list_head list;
+	/**
+	 * @id: Unique cache entry ID.
+	 */
+	u64 id;
+	/**
+	 * @ruleset: Single-layer ruleset for this cache entry.
+	 */
+	struct landlock_ruleset *ruleset;
+	/**
+	 * @match_type: Type of matching for this entry.
+	 */
+	enum landlock_supervisor_match_type match_type;
+	/**
+	 * @task: Task structure for PID-based matching (holds reference).
+	 */
+	struct task_struct *task;
+	/**
+	 * @exec_dentry: Dentry for executable-based matching (holds reference).
+	 */
+	struct dentry *exec_dentry;
+};
 
 /**
  * struct landlock_supervisor_request - Pending supervisor request
@@ -86,11 +129,25 @@ struct landlock_supervisor {
 	 * @eventfd_ctx: Optional eventfd context for notifications.
 	 */
 	struct eventfd_ctx *eventfd_ctx;
+	/**
+	 * @cache_list: List of cache entries.
+	 */
+	struct list_head cache_list;
+	/**
+	 * @next_cache_id: Next cache entry ID to assign.
+	 */
+	u64 next_cache_id;
 };
 
 int landlock_supervisor_init(struct landlock_supervisor *supervisor);
 void landlock_supervisor_destroy(struct landlock_supervisor *supervisor);
 int landlock_supervisor_check(struct landlock_ruleset *ruleset,
 			      const char *path, u64 access);
+long landlock_supervisor_ioctl(struct landlock_ruleset *ruleset,
+			       unsigned int cmd, unsigned long arg);
+
+/* Helper to get ruleset from fd (from syscalls.c) */
+struct landlock_ruleset *get_ruleset_from_fd(const int fd,
+					     const fmode_t mode);
 
 #endif /* _SECURITY_LANDLOCK_SUPERVISOR_H */

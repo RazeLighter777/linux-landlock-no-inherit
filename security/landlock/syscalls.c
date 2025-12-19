@@ -265,6 +265,18 @@ static __poll_t fop_ruleset_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
+static long fop_ruleset_ioctl(struct file *filp, unsigned int cmd,
+			      unsigned long arg)
+{
+	struct landlock_ruleset *ruleset = filp->private_data;
+
+	if (!ruleset)
+		return -EINVAL;
+
+	/* Only handle supervisor ioctls */
+	return landlock_supervisor_ioctl(ruleset, cmd, arg);
+}
+
 /*
  * A ruleset file descriptor enables to build a ruleset by adding (i.e.
  * writing) rule after rule, without relying on the task's context.  This
@@ -277,6 +289,8 @@ static const struct file_operations ruleset_fops = {
 	.read = fop_dummy_read,
 	.write = fop_dummy_write,
 	.poll = fop_ruleset_poll,
+	.unlocked_ioctl = fop_ruleset_ioctl,
+	.compat_ioctl = fop_ruleset_ioctl,
 };
 
 /*
@@ -435,8 +449,8 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
  * Returns an owned ruleset from a FD. It is thus needed to call
  * landlock_put_ruleset() on the return value.
  */
-static struct landlock_ruleset *get_ruleset_from_fd(const int fd,
-						    const fmode_t mode)
+struct landlock_ruleset *get_ruleset_from_fd(const int fd,
+					     const fmode_t mode)
 {
 	CLASS(fd, ruleset_f)(fd);
 	struct landlock_ruleset *ruleset;
