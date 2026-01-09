@@ -604,6 +604,23 @@ Landlock audit events with the ``LANDLOCK_RESTRICT_SELF_LOG_SAME_EXEC_OFF``,
 sys_landlock_restrict_self().  See Documentation/admin-guide/LSM/landlock.rst
 for more details on audit.
 
+Filesystem inheritance suppression (ABI < 8)
+-----------------
+
+Starting with the Landlock ABI version 8, it is possible to prevent a directory
+or file from inheriting it's parent's access grants by using the
+``LANDLOCK_ADD_RULE_NO_INHERIT`` flag passed to sys_landlock_add_rule().  This
+can be useful for policies where a parent directory needs broader access than its
+children.
+
+To mitigate sandbox-restart attacks, the inode itself, and ancestors of inodes
+tagged with ``LANDLOCK_ADD_RULE_NO_INHERIT`` cannot be removed, renamed,
+reparented, or linked into/from other directories.
+
+These parent directory protections propagate up to the root. Further inheritance
+for grants originating beneath a ``LANDLOCK_ADD_RULE_NO_INHERIT`` tagged inode
+are not affected unless also tagged with this flag.
+
 .. _kernel_support:
 
 Kernel support
